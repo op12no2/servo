@@ -257,7 +257,7 @@ static void help(void)
     "\n"
     "ping [id]                 ping servo(s); no id pings all 0..253\n"
     "pos <id>                  report position\n"
-    "stat <id>                 pos/speed/load/volt/temp/moving\n"
+    "stat <id>                 pos/speed/load/volt/temp/moving, mode and angle limits\n"
     "move <id> <pos> [time] [speed]   goal pos (0..1023); time = ms to reach it (0 = asap);\n"
     "                          speed = max speed in steps/s, 0..1023 (0 = full speed, reg 0x2E); both default 0;\n"
     "                          a list of ids is sent as one sync write so they all start together;\n"
@@ -397,13 +397,16 @@ static int run(char **tok, int nt)
     }
     else if (!strcmp(c, "stat")) {
         int id = arg(tok, 1, nt, 1, NULL);
-        unsigned char b[11];
+        unsigned char b[11], l[4];
         if (read_regs(id, REG_PRESENT_POS, 11, b) == 11) {
 #define P(reg) (b + (reg) - REG_PRESENT_POS)
-            printf("id %d pos %d speed %d load %d volt %.1fV temp %dC moving %d\n",
+            printf("id %d pos %d speed %d load %d volt %.1fV temp %dC moving %d",
                    id, get16(P(REG_PRESENT_POS)), get16(P(REG_PRESENT_SPEED)), get16(P(REG_PRESENT_LOAD)),
                    *P(REG_VOLTAGE) / 10.0, *P(REG_TEMP), *P(REG_MOVING));
 #undef P
+            if (read_regs(id, REG_MIN_ANGLE, 4, l) != 4) putchar('\n');
+            else if (!get16(l) && !get16(l + 2)) puts(" motor");
+            else printf(" servo %d..%d\n", get16(l), get16(l + 2));
         }
     }
     else if (!strcmp(c, "move")) {             /* takes its own id list: one sync write */

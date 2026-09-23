@@ -21,7 +21,7 @@ At the prompt, up/down arrows step through the last 100 lines entered (a whole `
 |---|---|
 | `ping [id]` | ping servo(s); no id pings all 0..253 |
 | `pos <id>` | report position |
-| `stat <id>` | pos/speed/load/volt/temp/moving |
+| `stat <id>` | pos/speed/load/volt/temp/moving, then mode: `servo <min>..<max>` (angle limits) or `motor` |
 | `move <id> <pos> [time] [speed]` | goal pos 0..1023; time in ms (0 = asap); speed cap in steps/s (0 = full); an id list is sent as one sync write, so they all start together; warns if a goal is outside an id's angle limits (the servo clamps it); waits for the move to finish and reports ids off the (clamped) goal by more than their dead zone (0x1A/0x1B) |
 | `torque <id> 0\|1` | torque enable |
 | `rb <id> <addr>` / `rw <id> <addr>` | read byte / 16-bit |
