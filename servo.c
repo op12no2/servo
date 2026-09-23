@@ -26,15 +26,11 @@
 #define INST_PING       0x01
 #define INST_READ       0x02
 #define INST_WRITE      0x03
-#define INST_REG_WRITE  0x04
-#define INST_ACTION     0x05
-#define INST_RESET      0x06
 #define INST_SYNC_WRITE 0x83
 #define BROADCAST       0xFE
 
 /* SC09 register map */
 #define REG_ID            0x05
-#define REG_BAUD          0x06
 #define REG_MIN_ANGLE     0x09  /* u16 */
 #define REG_MAX_ANGLE     0x0B  /* u16 */
 #define REG_DEADZONE_CW   0x1A
@@ -202,18 +198,13 @@ static int ping(int id)
     return 0;
 }
 
-/*
- * Ping ids lo..hi with a short timeout, collect responders into ids[].
- * Returns number found.
- */
-static int scan_ids(int lo, int hi, int *ids, int max)
+/* Ping every id 0..253 with a short timeout; returns number found. */
+static int ping_all(void)
 {
     int save = timeout_ms, found = 0;
     timeout_ms = 15;
-    for (int id = lo; id <= hi; id++) {
-        int r = ping(id);
-        if (r >= 0 && found < max) ids[found++] = id;
-    }
+    for (int id = 0; id <= 253; id++)
+        if (ping(id) >= 0) found++;
     timeout_ms = save;
     return found;
 }
@@ -232,7 +223,7 @@ static int write_regs(int id, int addr, const unsigned char *v, int n)
     unsigned char p[32], e = 0, out[8];
     p[0] = addr; memcpy(p + 1, v, n);
     int r = txrx(id, INST_WRITE, p, n + 1, &e, out, sizeof out);
-    if (id != BROADCAST && r < 0) { printf("id %d: no reply\n", id); return -1; }
+    if (r < 0) { printf("id %d: no reply\n", id); return -1; }
     if (e) printf("  status: %s\n", errstr(e));
     return 0;
 }
@@ -260,11 +251,10 @@ static int write_u16(int id, int addr, int v)
 static void help(void)
 {
     puts(
-    "<id> can be a list, no spaces: 3, 1-12, 2,6, 1-6,9 (all commands except setid)\n"
+    "<id> can be a list, no spaces: 3, 1-12, 2,6, 1-6,9 (every command that takes one, except setid)\n"
     "\n"
-    "ping <id>                 ping one servo\n"
-    "scan [lo] [hi]            ping a range (default 0..253)\n"
-    "pos <id>                  present position\n"
+    "ping [id]                 ping servo(s); no id pings all 0..253\n"
+    "pos <id>                  report position\n"
     "stat <id>                 pos/speed/load/volt/temp/moving\n"
     "move <id> <pos> [time] [speed]   goal pos (0..1023); time = ms to reach it (0 = asap);\n"
     "                          speed = max speed in steps/s, 0..1023 (0 = full speed, reg 0x2E); both default 0;\n"
@@ -284,8 +274,9 @@ static void help(void)
     "servomode <id> [min max]  back to position mode (limits default 20..1003)\n"
     "raw <hexbytes...>         send raw bytes, print reply\n"
     "verbose 0|1               hex dump packets\n"
-    "timeout <ms>              reply timeout\n"
-    "help | quit");
+    "timeout [ms]              show/set reply timeout\n"
+    "help | ?                  list commands\n"
+    "quit | q | exit           exit");
 }
 
 static int arg(char **tok, int i, int ntok, int dflt, int *ok)
@@ -340,9 +331,12 @@ static void verify_move(const int *ids, int nid, int goal, int tm)
 {
     int tol[254], still[254], done[254], left = nid;
     for (int i = 0; i < nid; i++) {
-        unsigned char dz[2];
-        tol[i] = read_regs(ids[i], REG_DEADZONE_CW, 2, dz) == 2 ? (dz[0] > dz[1] ? dz[0] : dz[1]) : 0;
-        still[i] = 0; done[i] = 0;
+        unsigned char dz[2] = {0, 0};
+        still[i] = 0;
+        done[i] = read_regs(ids[i], REG_DEADZONE_CW, 2, dz) != 2;   /* no reply: already reported */
+        left -= done[i];
+        int cw = dz[0], ccw = dz[REG_DEADZONE_CCW - REG_DEADZONE_CW];
+        tol[i] = cw > ccw ? cw : ccw;
     }
     for (int ms = 0; left; ms += 20) {
         usleep(20000);
@@ -374,14 +368,16 @@ static int run(char **tok, int nt)
     if (!strcmp(c, "help") || !strcmp(c, "?")) help();
     else if (!strcmp(c, "quit") || !strcmp(c, "q") || !strcmp(c, "exit")) return 1;
     else if (!strcmp(c, "verbose")) verbose = arg(tok, 1, nt, 1, NULL);
-    else if (!strcmp(c, "timeout")) timeout_ms = arg(tok, 1, nt, 50, NULL);
-    else if (!strcmp(c, "ping")) {
-        int id = arg(tok, 1, nt, 1, NULL);
-        if (ping(id) < 0) printf("id %d: no reply\n", id);
+    else if (!strcmp(c, "timeout")) {
+        if (nt < 2) printf("timeout %d ms\n", timeout_ms);
+        else timeout_ms = arg(tok, 1, nt, 0, NULL);
     }
-    else if (!strcmp(c, "scan")) {
-        int lo = arg(tok, 1, nt, 0, NULL), hi = arg(tok, 2, nt, 253, NULL), ids[254];
-        printf("%d servo(s) found\n", scan_ids(lo, hi, ids, 254));
+    else if (!strcmp(c, "ping")) {
+        if (nt < 2) printf("%d servo(s) found\n", ping_all());
+        else {
+            int id = arg(tok, 1, nt, 1, NULL);
+            if (ping(id) < 0) printf("id %d: no reply\n", id);
+        }
     }
     else if (!strcmp(c, "pos")) {
         int id = arg(tok, 1, nt, 1, NULL), v;
@@ -391,9 +387,11 @@ static int run(char **tok, int nt)
         int id = arg(tok, 1, nt, 1, NULL);
         unsigned char b[11];
         if (read_regs(id, REG_PRESENT_POS, 11, b) == 11) {
-            int p = get16(b), s = get16(b + 2), l = get16(b + 4);
+#define P(reg) (b + (reg) - REG_PRESENT_POS)
             printf("id %d pos %d speed %d load %d volt %.1fV temp %dC moving %d\n",
-                   id, p, s, l, b[6] / 10.0, b[7], b[10]);
+                   id, get16(P(REG_PRESENT_POS)), get16(P(REG_PRESENT_SPEED)), get16(P(REG_PRESENT_LOAD)),
+                   *P(REG_VOLTAGE) / 10.0, *P(REG_TEMP), *P(REG_MOVING));
+#undef P
         }
     }
     else if (!strcmp(c, "move")) {             /* takes its own id list: one sync write */
@@ -402,8 +400,9 @@ static int run(char **tok, int nt)
         if (!ok || nid < 1) { puts("usage: move <id> <pos> [time] [speed]"); return 0; }
         if (pos < 0 || pos > 1023) printf("warning: pos %d outside 0..1023, servo will clamp to its limits\n", pos);
         if (nid == 1) {
-            unsigned char b[6]; put16(b, pos); put16(b + 2, tm); put16(b + 4, sp);
-            write_regs(ids[0], REG_GOAL_POS, b, 6);
+            unsigned char b[6];
+            put16(b, pos); put16(b + REG_GOAL_TIME - REG_GOAL_POS, tm); put16(b + REG_GOAL_SPEED - REG_GOAL_POS, sp);
+            if (write_regs(ids[0], REG_GOAL_POS, b, 6)) return 0;
         } else sync_move(ids, nid, pos, tm, sp);
         verify_move(ids, nid, pos, tm);
     }
@@ -431,13 +430,12 @@ static int run(char **tok, int nt)
     else if (!strcmp(c, "dump")) {
         int id = arg(tok, 1, nt, 1, NULL);
         unsigned char b[0x46];
-        int n = 0;
-        for (int a = 0; a < 0x46 && n >= 0; a += 8) {
+        for (int a = 0; a < 0x46; a += 8) {
             int k = a + 8 > 0x46 ? 0x46 - a : 8;
-            if (read_regs(id, a, k, b + a) != k) { n = -1; break; }
+            if (read_regs(id, a, k, b + a) != k) return 0;
         }
-        if (n >= 0) printf("id %d:\n", id);
-        if (n >= 0) for (int a = 0; a < 0x46; a++) {
+        printf("id %d:\n", id);
+        for (int a = 0; a < 0x46; a++) {
             if (a % 8 == 0) printf("%02X:", a);
             printf(" %02X", b[a]);
             if (a % 8 == 7 || a == 0x45) putchar('\n');
@@ -515,7 +513,8 @@ static int dispatch(char **tok, int nt)
 {
     int per_id = 0;
     for (int i = 0; per_id_cmds[i]; i++) if (!strcmp(tok[0], per_id_cmds[i])) per_id = 1;
-    if (!per_id || nt < 2) return run(tok, nt);
+    if (!per_id || (nt < 2 && !strcmp(tok[0], "ping"))) return run(tok, nt);
+    if (nt < 2) { printf("%s: missing <id> (help)\n", tok[0]); return 0; }
 
     int ids[254], nid = parse_ids(tok[1], ids);
     if (nid < 0) { printf("bad id list '%s' (e.g. 3, 1-12, 2,6, 1-6,9)\n", tok[1]); return 0; }

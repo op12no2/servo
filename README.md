@@ -11,13 +11,12 @@ make
 
 ## Use
 
-Numbers accept hex (`0x2A`). `<id>` can be a list with no spaces, e.g. `3`, `1-12`, `2,6`, `1-6,9` (all commands except `setid`).
+Numbers accept hex (`0x2A`). `<id>` can be a list with no spaces, e.g. `3`, `1-12`, `2,6`, `1-6,9` (every command that takes one, except `setid`).
 
 | Command | Description |
 |---|---|
-| `ping <id>` | ping one servo |
-| `scan [lo] [hi]` | ping a range (default 0..253) |
-| `pos <id>` | present position |
+| `ping [id]` | ping servo(s); no id pings all 0..253 |
+| `pos <id>` | report position |
 | `stat <id>` | pos/speed/load/volt/temp/moving |
 | `move <id> <pos> [time] [speed]` | goal pos 0..1023; time in ms (0 = asap); speed cap in steps/s (0 = full); an id list is sent as one sync write, so they all start together; waits for the move to finish and reports ids off goal by more than their dead zone (0x1A/0x1B) |
 | `torque <id> 0\|1` | torque enable |
@@ -32,7 +31,7 @@ Numbers accept hex (`0x2A`). `<id>` can be a list with no spaces, e.g. `3`, `1-1
 | `servomode <id> [min max]` | back to position mode (default 20..1003) |
 | `raw <hexbytes...>` | send raw bytes, print reply |
 | `verbose 0\|1` | hex dump packets |
-| `timeout <ms>` | reply timeout |
+| `timeout [ms]` | show/set reply timeout |
 | `help`, `?` | list commands |
 | `quit`, `q`, `exit` | exit |
 
