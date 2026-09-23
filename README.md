@@ -1,6 +1,6 @@
 # Servo
 
-Interactive tester for a [Waveshare SC09](https://thepihut.com/products/serial-bus-servo-2-3kg) via a [Waveshare Serial Bus Servo Driver Board](https://thepihut.com/products/serial-bus-servo-driver-board) from a Raspberry Pi 5.
+Interactive tester for a [Waveshare SC09](https://thepihut.com/products/serial-bus-servo-2-3kg) servo via a [Waveshare Serial Bus Servo Driver Board](https://thepihut.com/products/serial-bus-servo-driver-board) from a Raspberry Pi 5.
 
 ## Build
 
