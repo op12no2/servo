@@ -327,16 +327,19 @@ static void sync_move(const int *ids, int nid, int pos, int tm, int sp)
 /*
  * After a move: warn about ids whose angle limits clamp the goal, poll each id
  * until it stops, then report any that settled outside the (clamped) goal
- * +/- its dead zone (larger of the CW/CCW regs). An id counts as
- * stopped once "moving" has read 0 for 100 ms, so a slow start isn't taken as
- * arrival. Gives up after time + 3 s.
+ * +/- its dead zone (larger of the CW/CCW regs). An id counts as stopped once
+ * "moving" has read 0 and pos hasn't changed for 100 ms (300 ms if off goal,
+ * as it can creep on after a pause): a slow start reads moving 0, and after an
+ * overshoot the flag drops while the servo is still easing back. Gives up
+ * after time + 3 s.
  */
 static void verify_move(const int *ids, int nid, int goal, int tm)
 {
-    int tol[254], gl[254], still[254], done[254], left = nid;
+    int tol[254], gl[254], still[254], last[254], done[254], left = nid;
     for (int i = 0; i < nid; i++) {
         unsigned char b[REG_DEADZONE_CCW - REG_MIN_ANGLE + 1];
         still[i] = 0;
+        last[i] = -1;
         gl[i] = goal;
         done[i] = read_regs(ids[i], REG_MIN_ANGLE, sizeof b, b) != (int)sizeof b;   /* no reply: already reported */
         left -= done[i];
@@ -356,15 +359,18 @@ static void verify_move(const int *ids, int nid, int goal, int tm)
             if (done[i]) continue;
             unsigned char b[11];
             if (read_regs(ids[i], REG_PRESENT_POS, 11, b) != 11) { done[i] = 1; left--; continue; }
-            int p = get16(b), d = p - gl[i];
+            int p = get16(b), d = p - gl[i], moved = p != last[i];
+            last[i] = p;
             if (b[REG_MOVING - REG_PRESENT_POS]) {
                 still[i] = 0;
                 if (ms < tm + 3000) continue;
                 printf("id %d: still moving at %d after %d ms, goal %d\n", ids[i], p, ms, gl[i]);
             }
-            else if (abs(d) > tol[i]) {
-                if (++still[i] < 5) continue;
-                printf("id %d: stopped at %d, goal %d (off by %+d, dead zone %d)\n", ids[i], p, gl[i], d, tol[i]);
+            else {
+                if (moved) still[i] = 0;
+                if (++still[i] < (abs(d) > tol[i] ? 15 : 5) && ms < tm + 3000) continue;
+                if (abs(d) > tol[i])
+                    printf("id %d: stopped at %d, goal %d (off by %+d, dead zone %d)\n", ids[i], p, gl[i], d, tol[i]);
             }
             done[i] = 1; left--;
         }
