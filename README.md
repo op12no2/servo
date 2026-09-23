@@ -1,6 +1,6 @@
 # Servo
 
-Interactive tester for a Waveshare SC09 via a [Waveshare Serial Bus Servo Driver Board](https://thepihut.com/products/serial-bus-servo-driver-board) from a Raspberry Pi 5. Probably also works for Feetech SCS/STS bus servos in general.
+Interactive tester for a Waveshare SC09 via a [Waveshare Serial Bus Servo Driver Board](https://thepihut.com/products/serial-bus-servo-driver-board) from a Raspberry Pi 5.
 
 ## Build
 
@@ -31,7 +31,6 @@ Numbers accept hex (`0x2A`). `<id>` can be a list with no spaces, e.g. `3`, `1-1
 | `spin <id> <speed>` | wheel speed -1000..1000 |
 | `servomode <id> [min max]` | back to position mode (default 20..1003) |
 | `raw <hexbytes...>` | send raw bytes, print reply |
-| `endian big\|little` | 16-bit byte order (big = SCS, little = STS) |
 | `verbose 0\|1` | hex dump packets |
 | `timeout <ms>` | reply timeout |
 | `help`, `?` | list commands |

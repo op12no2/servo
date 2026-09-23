@@ -1,17 +1,16 @@
 /*
- * servo.c - tiny interactive tester for Feetech SCS/STS bus servos
- * (e.g. SC09) via Waveshare Serial Bus Servo Driver Board / USB serial.
+ * servo.c - tiny interactive tester for Waveshare SC09 bus servos
+ * via Waveshare Bus Servo Adapter (A) / USB serial.
  *
  * Build:  make
  * Run:    ./servo [/dev/ttyACM0] [baud]
  * Then type commands on stdin ("help" lists them).
  *
- * Protocol (Feetech, Dynamixel-1.0-like):
+ * Protocol:
  *   TX: FF FF ID LEN INSTR PARAM... CHK     LEN = nparams + 2
  *   RX: FF FF ID LEN ERR   PARAM... CHK
  *   CHK = ~(ID + LEN + INSTR/ERR + sum(PARAM)) & 0xFF
- * 16-bit registers: SCS series (SC09, SCS15...) = high byte first,
- *                   STS/SMS series              = low byte first.
+ * 16-bit registers are high byte first.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -33,7 +32,7 @@
 #define INST_SYNC_WRITE 0x83
 #define BROADCAST       0xFE
 
-/* SCS register map (addresses shared with STS, meanings mostly same) */
+/* SC09 register map */
 #define REG_ID            0x05
 #define REG_BAUD          0x06
 #define REG_MIN_ANGLE     0x09  /* u16 */
@@ -53,9 +52,12 @@
 #define REG_MOVING        0x42
 
 static int fd = -1;
-static int big_endian = 1;      /* 1 = SCS (SC09), 0 = STS/SMS */
 static int verbose = 0;
 static int timeout_ms = 50;
+
+/* 16-bit register values are high byte first */
+static int get16(const unsigned char *b) { return b[0] << 8 | b[1]; }
+static void put16(unsigned char *b, int v) { b[0] = v >> 8; b[1] = v; }
 
 static void die(const char *fmt, ...)
 {
@@ -183,7 +185,7 @@ static const char *errstr(unsigned char e)
     if (e & 0x01) strcat(buf, "voltage ");
     if (e & 0x02) strcat(buf, "angle ");
     if (e & 0x04) strcat(buf, "overheat ");
-    if (e & 0x08) strcat(buf, "overcurrent ");   /* STS: overele */
+    if (e & 0x08) strcat(buf, "overcurrent ");
     if (e & 0x20) strcat(buf, "overload ");
     return buf;
 }
@@ -195,7 +197,7 @@ static int ping(int id)
     if (r < 0) return r;
     unsigned char m[2]; int model = -1;
     if (txrx(id, INST_READ, (unsigned char[]){0x03, 2}, 2, &e, m, 2) == 2)
-        model = big_endian ? (m[0] << 8 | m[1]) : (m[1] << 8 | m[0]);
+        model = get16(m);
     printf("id %d: alive, model %d (status %s)\n", id, model, errstr(e));
     return 0;
 }
@@ -239,7 +241,7 @@ static int read_u16(int id, int addr, int *val)
 {
     unsigned char b[2];
     if (read_regs(id, addr, 2, b) < 2) return -1;
-    *val = big_endian ? (b[0] << 8 | b[1]) : (b[1] << 8 | b[0]);
+    *val = get16(b);
     return 0;
 }
 
@@ -251,13 +253,8 @@ static int write_u8(int id, int addr, int v)
 static int write_u16(int id, int addr, int v)
 {
     unsigned char b[2];
-    if (big_endian) { b[0] = v >> 8; b[1] = v; } else { b[0] = v; b[1] = v >> 8; }
+    put16(b, v);
     return write_regs(id, addr, b, 2);
-}
-
-static void put16(unsigned char *b, int v)
-{
-    if (big_endian) { b[0] = v >> 8; b[1] = v; } else { b[0] = v; b[1] = v >> 8; }
 }
 
 static void help(void)
@@ -286,7 +283,6 @@ static void help(void)
     "spin <id> <speed>         motor mode speed -1000..1000 (0 = stop)\n"
     "servomode <id> [min max]  back to position mode (limits default 20..1003)\n"
     "raw <hexbytes...>         send raw bytes, print reply\n"
-    "endian big|little         16-bit byte order (big=SCS/SC09, little=STS)\n"
     "verbose 0|1               hex dump packets\n"
     "timeout <ms>              reply timeout\n"
     "help | quit");
@@ -354,7 +350,7 @@ static void verify_move(const int *ids, int nid, int goal, int tm)
             if (done[i]) continue;
             unsigned char b[11];
             if (read_regs(ids[i], REG_PRESENT_POS, 11, b) != 11) { done[i] = 1; left--; continue; }
-            int p = big_endian ? b[0] << 8 | b[1] : b[1] << 8 | b[0], d = p - goal;
+            int p = get16(b), d = p - goal;
             if (b[REG_MOVING - REG_PRESENT_POS]) {
                 still[i] = 0;
                 if (ms < tm + 3000) continue;
@@ -379,10 +375,6 @@ static int run(char **tok, int nt)
     else if (!strcmp(c, "quit") || !strcmp(c, "q") || !strcmp(c, "exit")) return 1;
     else if (!strcmp(c, "verbose")) verbose = arg(tok, 1, nt, 1, NULL);
     else if (!strcmp(c, "timeout")) timeout_ms = arg(tok, 1, nt, 50, NULL);
-    else if (!strcmp(c, "endian")) {
-        if (nt > 1) big_endian = !strcmp(tok[1], "big");
-        printf("%s-endian\n", big_endian ? "big" : "little");
-    }
     else if (!strcmp(c, "ping")) {
         int id = arg(tok, 1, nt, 1, NULL);
         if (ping(id) < 0) printf("id %d: no reply\n", id);
@@ -399,9 +391,7 @@ static int run(char **tok, int nt)
         int id = arg(tok, 1, nt, 1, NULL);
         unsigned char b[11];
         if (read_regs(id, REG_PRESENT_POS, 11, b) == 11) {
-            int p = big_endian ? b[0]<<8|b[1] : b[1]<<8|b[0];
-            int s = big_endian ? b[2]<<8|b[3] : b[3]<<8|b[2];
-            int l = big_endian ? b[4]<<8|b[5] : b[5]<<8|b[4];
+            int p = get16(b), s = get16(b + 2), l = get16(b + 4);
             printf("id %d pos %d speed %d load %d volt %.1fV temp %dC moving %d\n",
                    id, p, s, l, b[6] / 10.0, b[7], b[10]);
         }
@@ -544,8 +534,7 @@ int main(int argc, char **argv)
     const char *dev = argc > 1 ? argv[1] : "/dev/ttyACM0";
     int baud = argc > 2 ? atoi(argv[2]) : 1000000;
     open_port(dev, baud);
-    printf("opened %s @ %d, %s-endian 16-bit (type help)\n", dev, baud,
-           big_endian ? "big" : "little");
+    printf("opened %s @ %d (type help)\n", dev, baud);
 
     char line[256];
     int interactive = isatty(0);
