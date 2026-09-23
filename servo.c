@@ -261,6 +261,7 @@ static void help(void)
     "move <id> <pos> [time] [speed]   goal pos (0..1023); time = ms to reach it (0 = asap);\n"
     "                          speed = max speed in steps/s, 0..1023 (0 = full speed, reg 0x2E); both default 0;\n"
     "                          a list of ids is sent as one sync write so they all start together;\n"
+    "                          warns if the goal is outside an id's angle limits (the servo clamps it);\n"
     "                          waits for the move to finish, reports ids off goal by more than their dead zone\n"
     "torque <id> 0|1           torque enable\n"
     "rb <id> <addr>            read byte\n"
@@ -324,21 +325,30 @@ static void sync_move(const int *ids, int nid, int pos, int tm, int sp)
 }
 
 /*
- * After a move: poll each id until it stops, then report any that settled
- * outside goal +/- its dead zone (larger of the CW/CCW regs). An id counts as
+ * After a move: warn about ids whose angle limits clamp the goal, poll each id
+ * until it stops, then report any that settled outside the (clamped) goal
+ * +/- its dead zone (larger of the CW/CCW regs). An id counts as
  * stopped once "moving" has read 0 for 100 ms, so a slow start isn't taken as
  * arrival. Gives up after time + 3 s.
  */
 static void verify_move(const int *ids, int nid, int goal, int tm)
 {
-    int tol[254], still[254], done[254], left = nid;
+    int tol[254], gl[254], still[254], done[254], left = nid;
     for (int i = 0; i < nid; i++) {
-        unsigned char dz[2] = {0, 0};
+        unsigned char b[REG_DEADZONE_CCW - REG_MIN_ANGLE + 1];
         still[i] = 0;
-        done[i] = read_regs(ids[i], REG_DEADZONE_CW, 2, dz) != 2;   /* no reply: already reported */
+        gl[i] = goal;
+        done[i] = read_regs(ids[i], REG_MIN_ANGLE, sizeof b, b) != (int)sizeof b;   /* no reply: already reported */
         left -= done[i];
-        int cw = dz[0], ccw = dz[REG_DEADZONE_CCW - REG_DEADZONE_CW];
+        if (done[i]) continue;
+#define R(a) (b + (a) - REG_MIN_ANGLE)
+        int cw = *R(REG_DEADZONE_CW), ccw = *R(REG_DEADZONE_CCW);
+        int mn = get16(R(REG_MIN_ANGLE)), mx = get16(R(REG_MAX_ANGLE));
+#undef R
         tol[i] = cw > ccw ? cw : ccw;
+        if (mn || mx) gl[i] = goal < mn ? mn : goal > mx ? mx : goal;   /* 0/0 = motor mode */
+        if (gl[i] != goal)
+            printf("id %d: goal %d outside limits %d..%d, clamped to %d\n", ids[i], goal, mn, mx, gl[i]);
     }
     for (int ms = 0; left; ms += 20) {
         usleep(20000);
@@ -346,15 +356,15 @@ static void verify_move(const int *ids, int nid, int goal, int tm)
             if (done[i]) continue;
             unsigned char b[11];
             if (read_regs(ids[i], REG_PRESENT_POS, 11, b) != 11) { done[i] = 1; left--; continue; }
-            int p = get16(b), d = p - goal;
+            int p = get16(b), d = p - gl[i];
             if (b[REG_MOVING - REG_PRESENT_POS]) {
                 still[i] = 0;
                 if (ms < tm + 3000) continue;
-                printf("id %d: still moving at %d after %d ms, goal %d\n", ids[i], p, ms, goal);
+                printf("id %d: still moving at %d after %d ms, goal %d\n", ids[i], p, ms, gl[i]);
             }
             else if (abs(d) > tol[i]) {
                 if (++still[i] < 5) continue;
-                printf("id %d: stopped at %d, goal %d (off by %+d, dead zone %d)\n", ids[i], p, goal, d, tol[i]);
+                printf("id %d: stopped at %d, goal %d (off by %+d, dead zone %d)\n", ids[i], p, gl[i], d, tol[i]);
             }
             done[i] = 1; left--;
         }
