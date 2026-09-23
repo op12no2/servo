@@ -252,6 +252,8 @@ static void help(void)
 {
     puts(
     "<id> can be a list, no spaces: 3, 1-12, 2,6, 1-6,9 (every command that takes one, except setid)\n"
+    "several commands on one line, separated by ';', run in order: move 1 200; move 1 800\n"
+    "up/down arrows recall earlier lines (up + enter repeats the last)\n"
     "\n"
     "ping [id]                 ping servo(s); no id pings all 0..253\n"
     "pos <id>                  report position\n"
@@ -528,6 +530,86 @@ static int dispatch(char **tok, int nt)
     return 0;
 }
 
+/* minimal line editor for a tty: arrows, history, home/end, backspace */
+#define NHIST 100
+static char *hist[NHIST];
+static int nhist;
+
+static void redraw(const char *buf, int len, int cur)
+{
+    printf("\r> %.*s\x1b[K", len, buf);
+    if (len > cur) printf("\x1b[%dD", len - cur);
+    fflush(stdout);
+}
+
+static void load(char *buf, int size, const char *s, int *len, int *cur)
+{
+    snprintf(buf, size, "%s", s);
+    *len = *cur = strlen(buf);
+}
+
+/* returns 0 on EOF (ctrl-d on an empty line) */
+static int edit_line(char *buf, int size)
+{
+    struct termios old, raw;
+    tcgetattr(0, &old);
+    raw = old;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0;
+    tcsetattr(0, TCSANOW, &raw);
+
+    char draft[1024] = "";  /* the line being typed, kept while browsing history */
+    int len = 0, cur = 0, h = nhist, ok = 1;
+    buf[0] = 0;
+    redraw(buf, len, cur);
+    for (;;) {
+        unsigned char c;
+        if (read(0, &c, 1) != 1) { ok = 0; break; }
+        if (c == '\r' || c == '\n') break;
+        if (c == 4 && !len) { ok = 0; break; }                     /* ctrl-d */
+        if (c == 127 || c == 8) {                                  /* backspace */
+            if (cur) { memmove(buf + cur - 1, buf + cur, len - cur); len--; cur--; }
+        } else if (c == 1) cur = 0;                                /* ctrl-a */
+        else if (c == 5) cur = len;                                /* ctrl-e */
+        else if (c == 21) len = cur = 0;                           /* ctrl-u */
+        else if (c == 27) {                                        /* escape sequence */
+            unsigned char e[2];
+            if (read(0, e, 1) != 1 || (e[0] != '[' && e[0] != 'O') || read(0, e + 1, 1) != 1) continue;
+            char k = e[1];
+            if (k >= '0' && k <= '9') {                            /* ESC [ n ~ */
+                unsigned char t;
+                if (read(0, &t, 1) != 1 || t != '~') continue;
+                k = (k == '1' || k == '7') ? 'H' : (k == '4' || k == '8') ? 'F' : (k == '3') ? 'X' : 0;
+            }
+            if (k == 'A' || k == 'B') {                            /* up / down: history */
+                if (h == nhist) { buf[len] = 0; snprintf(draft, sizeof draft, "%s", buf); }
+                if (k == 'A' && h > 0) h--;
+                else if (k == 'B' && h < nhist) h++;
+                else continue;
+                load(buf, size, h < nhist ? hist[h] : draft, &len, &cur);
+            }
+            else if (k == 'C' && cur < len) cur++;
+            else if (k == 'D' && cur > 0) cur--;
+            else if (k == 'H') cur = 0;
+            else if (k == 'F') cur = len;
+            else if (k == 'X' && cur < len) { memmove(buf + cur, buf + cur + 1, len - cur - 1); len--; }
+        } else if (c >= 32 && len < size - 1) {                    /* insert */
+            memmove(buf + cur + 1, buf + cur, len - cur);
+            buf[cur++] = c; len++;
+        }
+        redraw(buf, len, cur);
+    }
+    buf[len] = 0;
+    putchar('\n');
+    tcsetattr(0, TCSANOW, &old);
+
+    if (ok && len && (!nhist || strcmp(hist[nhist - 1], buf))) {
+        if (nhist == NHIST) { free(hist[0]); memmove(hist, hist + 1, (NHIST - 1) * sizeof *hist); nhist--; }
+        hist[nhist++] = strdup(buf);
+    }
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     const char *dev = argc > 1 ? argv[1] : "/dev/ttyACM0";
@@ -535,15 +617,17 @@ int main(int argc, char **argv)
     open_port(dev, baud);
     printf("opened %s @ %d (type help)\n", dev, baud);
 
-    char line[256];
-    int interactive = isatty(0);
-    for (;;) {
-        if (interactive) { fputs("> ", stdout); fflush(stdout); }
-        if (!fgets(line, sizeof line, stdin)) break;
-        char *tok[16]; int nt = 0;
-        for (char *s = strtok(line, " \t\r\n"); s && nt < 16; s = strtok(NULL, " \t\r\n")) tok[nt++] = s;
-        if (!nt) continue;
-        if (dispatch(tok, nt)) break;
+    char line[1024];
+    int interactive = isatty(0), done = 0;
+    while (!done) {
+        if (interactive ? !edit_line(line, sizeof line) : !fgets(line, sizeof line, stdin)) break;
+        /* ';' separates commands on one line; run them in order */
+        for (char *cmd = line, *next; cmd && !done; cmd = next) {
+            if ((next = strchr(cmd, ';'))) *next++ = 0;
+            char *tok[16]; int nt = 0;
+            for (char *s = strtok(cmd, " \t\r\n"); s && nt < 16; s = strtok(NULL, " \t\r\n")) tok[nt++] = s;
+            if (nt) done = dispatch(tok, nt);
+        }
     }
     close(fd);
     return 0;
