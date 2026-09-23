@@ -35,4 +35,5 @@ Numbers accept hex (`0x2A`).
 | `endian big\|little` | 16-bit byte order (big = SCS, little = STS) |
 | `verbose 0\|1` | hex dump packets |
 | `timeout <ms>` | reply timeout |
-| `help\|?`, `quit\|q\|exit` | |
+| `help`, `?` | list commands |
+| `quit`, `q`, `exit` | exit |
