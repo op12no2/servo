@@ -1,11 +1,15 @@
-# servo
+# Servo
 
-Interactive tester for Feetech SCS/STS bus servos (Waveshare SC09 ≈ Feetech SCS0009) via the Waveshare Serial Bus Servo Driver Board, from a Raspberry Pi 5.
+Interactive tester for a Waveshare SC09 via a [Waveshare Serial Bus Servo Driver Board](https://thepihut.com/products/serial-bus-servo-driver-board) from a Raspberry Pi 5. Probably also works for Feetech SCS/STS bus servos in general.
+
+## Build
 
 ```
 make
 ./servo [/dev/ttyACM0] [baud]      # default 1000000
 ```
+
+## Use
 
 Numbers accept hex (`0x2A`).
 
@@ -31,4 +35,4 @@ Numbers accept hex (`0x2A`).
 | `endian big\|little` | 16-bit byte order (big = SCS, little = STS) |
 | `verbose 0\|1` | hex dump packets |
 | `timeout <ms>` | reply timeout |
-| `help`, `quit` | |
+| `help|?`, `quit` | |
