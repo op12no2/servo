@@ -9,8 +9,9 @@ A single-file C tool (`servo.c`): an interactive REPL for poking Feetech SCS/STS
 ## Hardware
 
 - **Host:** Raspberry Pi 5, where Claude Code itself runs, so commands can be tried against the real servo.
-- **Board:** Waveshare Serial Bus Servo Driver Board (https://thepihut.com/products/serial-bus-servo-driver-board). It connects over USB through a CH343 USB-serial chip (`1a86:55d3`) and appears as `/dev/ttyACM0` (`/dev/serial/by-id/usb-1a86_USB_Single_Serial_*`).
-- **Servo:** Waveshare SC09 (see above).
+- **Board:** Waveshare Bus Servo Adapter (A), sold by The Pi Hut as the "Serial Bus Servo Driver Board" ([wiki](https://www.waveshare.com/wiki/Bus_Servo_Adapter_(A)), [shop](https://thepihut.com/products/serial-bus-servo-driver-board)). It connects over USB through a CH343 USB-serial chip (`1a86:55d3`) and appears as `/dev/ttyACM0` (`/dev/serial/by-id/usb-1a86_USB_Single_Serial_*`). Its jumper must be in position **B** for USB control (A = UART). The board passes its DC input straight to the servos, so the supply voltage must match the servo's rating.
+- **Servo:** Waveshare SC09 ([wiki](https://www.waveshare.com/wiki/SC09_Servo)). Rated input **4–6 V**; 300° over 0..1023 (0.293°/step, centre 511); 2.3 kg·cm and 0.1 s/60° at 6 V; 38400 bps to 1 Mbps; factory default ID 1. The wiki links the SCS protocol manual and memory table PDFs.
+- **Observed on this bench:** servos at ids 2 and 3; dead zone (0x1A/0x1B) = 1; voltage limits 4.5..9.0 V (0x0F/0x0E); present voltage reads about 8.5 V, which is above the SC09's 4–6 V rating.
 
 ## Build / run
 
@@ -27,8 +28,9 @@ Keep the build warning-free under `-Wall -Wextra`. You can only really verify a 
 - **Protocol layer:** `txrx()` builds a Feetech packet (`FF FF ID LEN INSTR PARAMS CHK`) and reads the status reply. The adapter is half-duplex and may echo TX back, so `txrx()` first discards an exact echo, then resyncs on the `FF FF` header. Broadcast (0xFE) writes other than ping return immediately without waiting for a reply.
 - **Register helpers:** `read_regs` / `write_regs` / `read_u16` / `write_u16` / `put16`. All 16-bit values go through the global `big_endian` flag. It's big-endian for the SCS series (the default) and little-endian for STS/SMS, and the `endian` command toggles it. Any new 16-bit register access must respect this flag.
 - **EPROM writes:** ID, angle limits and mode must be wrapped in unlock/lock via `REG_LOCK` (0x30): write 0, change the value, write 1. `setid`, `limits`, `motor` and `servomode` follow this pattern.
-- **Command dispatch:** `run()` takes a tokenised line and matches it with an `if/else strcmp` chain. `main()` only opens the port, reads lines, tokenises them (max 16 tokens) and calls `run()`. To add a command, add a branch in `run()` and a line in `help()`.
+- **Command dispatch:** `main()` reads and tokenises lines (max 16 tokens) and calls `dispatch()`. For commands in `per_id_cmds`, `dispatch()` expands the `<id>` token with `parse_ids()` (`3`, `1-12`, `2,6`, `1-6,9`; no spaces) and calls `run()` once per id with that token replaced. Everything else goes straight to `run()`, an `if/else strcmp` chain that only ever sees a single id. To add a command, add a branch in `run()`, a line in `help()`, and add it to `per_id_cmds` if its first argument is an id.
+- **`move` is the exception:** it's not in `per_id_cmds`. It parses its own id list so that several ids go out as one `SYNC_WRITE` (`sync_move()`, pos/time/speed, split into packets of 35 ids), so all the servos start together. It then blocks in `verify_move()`, polling pos and the moving flag (read together with pos, 0x38..0x42) every 20 ms. It reports ids that stop outside goal ± their dead zone, or are still moving after time + 3 s.
 - **Argument parsing:** `arg(tok, i, nt, dflt, &ok)` parses with `strtol` base 0, so hex like `0x2A` works. It clears `ok` when an argument is missing, and commands use this to print their usage text.
 - **Motor mode (SC series):** both angle limits are 0. Speed is written to the goal-time register (0x2C), with bit 10 as the direction bit (see `spin`).
 
-Commands take explicit servo ids only. An earlier "all" (scan-and-apply) option was removed on purpose; don't reintroduce it unless asked.
+An earlier "all" (scan-and-apply) option and a separate `sync` command were both removed on purpose. Id lists replace them, so don't reintroduce either unless asked. The repo is kept generic; hexapod-specific code will live in a separate copy.

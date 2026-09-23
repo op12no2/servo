@@ -11,7 +11,7 @@ make
 
 ## Use
 
-Numbers accept hex (`0x2A`).
+Numbers accept hex (`0x2A`). `<id>` can be a list with no spaces, e.g. `3`, `1-12`, `2,6`, `1-6,9` (all commands except `setid`).
 
 | Command | Description |
 |---|---|
@@ -19,7 +19,7 @@ Numbers accept hex (`0x2A`).
 | `scan [lo] [hi]` | ping a range (default 0..253) |
 | `pos <id>` | present position |
 | `stat <id>` | pos/speed/load/volt/temp/moving |
-| `move <id> <pos> [time] [speed]` | goal pos 0..1023; time in ms (0 = asap); speed cap in steps/s (0 = full) |
+| `move <id> <pos> [time] [speed]` | goal pos 0..1023; time in ms (0 = asap); speed cap in steps/s (0 = full); an id list is sent as one sync write, so they all start together; waits for the move to finish and reports ids off goal by more than their dead zone (0x1A/0x1B) |
 | `torque <id> 0\|1` | torque enable |
 | `rb <id> <addr>` / `rw <id> <addr>` | read byte / 16-bit |
 | `wb <id> <addr> <val>` / `ww <id> <addr> <val>` | write byte / 16-bit |
@@ -30,10 +30,14 @@ Numbers accept hex (`0x2A`).
 | `motor <id>` | wheel mode (limits 0/0) |
 | `spin <id> <speed>` | wheel speed -1000..1000 |
 | `servomode <id> [min max]` | back to position mode (default 20..1003) |
-| `sync <pos> <id>...` | same goal pos to many ids at once |
 | `raw <hexbytes...>` | send raw bytes, print reply |
 | `endian big\|little` | 16-bit byte order (big = SCS, little = STS) |
 | `verbose 0\|1` | hex dump packets |
 | `timeout <ms>` | reply timeout |
 | `help`, `?` | list commands |
 | `quit`, `q`, `exit` | exit |
+
+## Links
+
+- [SC09 Servo wiki](https://www.waveshare.com/wiki/SC09_Servo)
+- [Bus Servo Adapter (A) wiki](https://www.waveshare.com/wiki/Bus_Servo_Adapter_(A))

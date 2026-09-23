@@ -38,6 +38,8 @@
 #define REG_BAUD          0x06
 #define REG_MIN_ANGLE     0x09  /* u16 */
 #define REG_MAX_ANGLE     0x0B  /* u16 */
+#define REG_DEADZONE_CW   0x1A
+#define REG_DEADZONE_CCW  0x1B
 #define REG_TORQUE_ENABLE 0x28
 #define REG_GOAL_POS      0x2A  /* u16 */
 #define REG_GOAL_TIME     0x2C  /* u16 */
@@ -261,12 +263,16 @@ static void put16(unsigned char *b, int v)
 static void help(void)
 {
     puts(
+    "<id> can be a list, no spaces: 3, 1-12, 2,6, 1-6,9 (all commands except setid)\n"
+    "\n"
     "ping <id>                 ping one servo\n"
     "scan [lo] [hi]            ping a range (default 0..253)\n"
     "pos <id>                  present position\n"
     "stat <id>                 pos/speed/load/volt/temp/moving\n"
     "move <id> <pos> [time] [speed]   goal pos (0..1023); time = ms to reach it (0 = asap);\n"
-    "                          speed = max speed in steps/s, 0..1023 (0 = full speed, reg 0x2E); both default 0\n"
+    "                          speed = max speed in steps/s, 0..1023 (0 = full speed, reg 0x2E); both default 0;\n"
+    "                          a list of ids is sent as one sync write so they all start together;\n"
+    "                          waits for the move to finish, reports ids off goal by more than their dead zone\n"
     "torque <id> 0|1           torque enable\n"
     "rb <id> <addr>            read byte\n"
     "rw <id> <addr>            read 16-bit\n"
@@ -279,7 +285,6 @@ static void help(void)
     "motor <id>                enter motor/wheel mode (angle limits -> 0/0, EPROM)\n"
     "spin <id> <speed>         motor mode speed -1000..1000 (0 = stop)\n"
     "servomode <id> [min max]  back to position mode (limits default 20..1003)\n"
-    "sync <pos> <id>...        sync-write same goal pos to many ids\n"
     "raw <hexbytes...>         send raw bytes, print reply\n"
     "endian big|little         16-bit byte order (big=SCS/SC09, little=STS)\n"
     "verbose 0|1               hex dump packets\n"
@@ -291,6 +296,77 @@ static int arg(char **tok, int i, int ntok, int dflt, int *ok)
 {
     if (i >= ntok) { if (ok) *ok = 0; return dflt; }
     return (int)strtol(tok[i], NULL, 0);
+}
+
+/*
+ * Parse an id list like "3", "1-12", "2,6" or "1-6,9" into ids[] (in order,
+ * duplicates dropped). Returns count, or -1 if malformed or outside 0..253.
+ */
+static int parse_ids(const char *s, int *ids)
+{
+    unsigned char seen[254] = {0};
+    int n = 0;
+    for (;;) {
+        char *e;
+        long lo = strtol(s, &e, 0), hi = lo;
+        if (e == s) return -1;
+        if (*e == '-') { s = e + 1; hi = strtol(s, &e, 0); if (e == s) return -1; }
+        if (lo < 0 || hi > 253 || lo > hi) return -1;
+        for (long id = lo; id <= hi; id++) if (!seen[id]) { seen[id] = 1; ids[n++] = id; }
+        if (!*e) return n;
+        if (*e != ',') return -1;
+        s = e + 1;
+    }
+}
+
+/* goal pos/time/speed to many ids in one SYNC_WRITE (35 per packet: LEN = 2 + 7n + 2 <= 255) */
+static void sync_move(const int *ids, int nid, int pos, int tm, int sp)
+{
+    for (int k = 0; k < nid; k += 35) {
+        int m = nid - k < 35 ? nid - k : 35, n = 0;
+        unsigned char p[2 + 35 * 7];
+        p[n++] = REG_GOAL_POS; p[n++] = 6;
+        for (int i = k; i < k + m; i++) {
+            p[n++] = ids[i];
+            put16(p + n, pos); put16(p + n + 2, tm); put16(p + n + 4, sp); n += 6;
+        }
+        txrx(BROADCAST, INST_SYNC_WRITE, p, n, NULL, NULL, 0);
+    }
+}
+
+/*
+ * After a move: poll each id until it stops, then report any that settled
+ * outside goal +/- its dead zone (larger of the CW/CCW regs). An id counts as
+ * stopped once "moving" has read 0 for 100 ms, so a slow start isn't taken as
+ * arrival. Gives up after time + 3 s.
+ */
+static void verify_move(const int *ids, int nid, int goal, int tm)
+{
+    int tol[254], still[254], done[254], left = nid;
+    for (int i = 0; i < nid; i++) {
+        unsigned char dz[2];
+        tol[i] = read_regs(ids[i], REG_DEADZONE_CW, 2, dz) == 2 ? (dz[0] > dz[1] ? dz[0] : dz[1]) : 0;
+        still[i] = 0; done[i] = 0;
+    }
+    for (int ms = 0; left; ms += 20) {
+        usleep(20000);
+        for (int i = 0; i < nid; i++) {
+            if (done[i]) continue;
+            unsigned char b[11];
+            if (read_regs(ids[i], REG_PRESENT_POS, 11, b) != 11) { done[i] = 1; left--; continue; }
+            int p = big_endian ? b[0] << 8 | b[1] : b[1] << 8 | b[0], d = p - goal;
+            if (b[REG_MOVING - REG_PRESENT_POS]) {
+                still[i] = 0;
+                if (ms < tm + 3000) continue;
+                printf("id %d: still moving at %d after %d ms, goal %d\n", ids[i], p, ms, goal);
+            }
+            else if (abs(d) > tol[i]) {
+                if (++still[i] < 5) continue;
+                printf("id %d: stopped at %d, goal %d (off by %+d, dead zone %d)\n", ids[i], p, goal, d, tol[i]);
+            }
+            done[i] = 1; left--;
+        }
+    }
 }
 
 /* run one tokenised command; returns 1 on quit */
@@ -330,13 +406,16 @@ static int run(char **tok, int nt)
                    id, p, s, l, b[6] / 10.0, b[7], b[10]);
         }
     }
-    else if (!strcmp(c, "move")) {
-        int id = arg(tok, 1, nt, 1, &ok), pos = arg(tok, 2, nt, 512, &ok);
+    else if (!strcmp(c, "move")) {             /* takes its own id list: one sync write */
+        int ids[254], nid = nt > 1 ? parse_ids(tok[1], ids) : 0, pos = arg(tok, 2, nt, 512, &ok);
         int tm = arg(tok, 3, nt, 0, NULL), sp = arg(tok, 4, nt, 0, NULL);
-        if (!ok) { puts("usage: move <id> <pos> [time] [speed]"); return 0; }
+        if (!ok || nid < 1) { puts("usage: move <id> <pos> [time] [speed]"); return 0; }
         if (pos < 0 || pos > 1023) printf("warning: pos %d outside 0..1023, servo will clamp to its limits\n", pos);
-        unsigned char b[6]; put16(b, pos); put16(b + 2, tm); put16(b + 4, sp);
-        write_regs(id, REG_GOAL_POS, b, 6);
+        if (nid == 1) {
+            unsigned char b[6]; put16(b, pos); put16(b + 2, tm); put16(b + 4, sp);
+            write_regs(ids[0], REG_GOAL_POS, b, 6);
+        } else sync_move(ids, nid, pos, tm, sp);
+        verify_move(ids, nid, pos, tm);
     }
     else if (!strcmp(c, "torque")) write_u8(arg(tok, 1, nt, 1, NULL), REG_TORQUE_ENABLE, arg(tok, 2, nt, 1, NULL));
     else if (!strcmp(c, "rb")) {
@@ -422,20 +501,6 @@ static int run(char **tok, int nt)
         if (read_u16(id, REG_MIN_ANGLE, &mn) == 0 && read_u16(id, REG_MAX_ANGLE, &mx) == 0)
             printf("id %d: servo mode, limits %d..%d\n", id, mn, mx);
     }
-    else if (!strcmp(c, "sync")) {
-        if (nt < 3) { puts("usage: sync <pos> <id>..."); return 0; }
-        int pos = arg(tok, 1, nt, 512, NULL);
-        int ids[254], nid = 0;
-        for (int i = 2; i < nt; i++) ids[nid++] = arg(tok, i, nt, 1, NULL);
-        if (nid > 83) nid = 83;                 /* LEN byte limit: 2 + 3*n + 2 <= 255 */
-        unsigned char p[256]; int n = 0;
-        p[n++] = REG_GOAL_POS; p[n++] = 2;
-        for (int i = 0; i < nid; i++) { p[n++] = ids[i]; put16(p + n, pos); n += 2; }
-        txrx(BROADCAST, INST_SYNC_WRITE, p, n, NULL, NULL, 0);
-        printf("sync pos %d -> id(s):", pos);
-        for (int i = 0; i < nid; i++) printf(" %d", ids[i]);
-        putchar('\n');
-    }
     else if (!strcmp(c, "raw")) {
         unsigned char b[64]; int n = 0;
         for (int i = 1; i < nt && n < 64; i++) b[n++] = strtol(tok[i], NULL, 16);
@@ -447,6 +512,30 @@ static int run(char **tok, int nt)
         hexdump("rx:", r, got);
     }
     else printf("unknown command '%s' (help)\n", c);
+    return 0;
+}
+
+/* commands whose first argument is an <id> that may be a list; run once per id */
+static const char *per_id_cmds[] = {
+    "ping", "pos", "stat", "torque", "rb", "rw", "wb", "ww", "dump",
+    "lock", "limits", "motor", "spin", "servomode", NULL
+};
+
+static int dispatch(char **tok, int nt)
+{
+    int per_id = 0;
+    for (int i = 0; per_id_cmds[i]; i++) if (!strcmp(tok[0], per_id_cmds[i])) per_id = 1;
+    if (!per_id || nt < 2) return run(tok, nt);
+
+    int ids[254], nid = parse_ids(tok[1], ids);
+    if (nid < 0) { printf("bad id list '%s' (e.g. 3, 1-12, 2,6, 1-6,9)\n", tok[1]); return 0; }
+    char idbuf[8], *t[16];
+    memcpy(t, tok, nt * sizeof *t);
+    t[1] = idbuf;
+    for (int i = 0; i < nid; i++) {
+        snprintf(idbuf, sizeof idbuf, "%d", ids[i]);
+        run(t, nt);
+    }
     return 0;
 }
 
@@ -466,7 +555,7 @@ int main(int argc, char **argv)
         char *tok[16]; int nt = 0;
         for (char *s = strtok(line, " \t\r\n"); s && nt < 16; s = strtok(NULL, " \t\r\n")) tok[nt++] = s;
         if (!nt) continue;
-        if (run(tok, nt)) break;
+        if (dispatch(tok, nt)) break;
     }
     close(fd);
     return 0;
