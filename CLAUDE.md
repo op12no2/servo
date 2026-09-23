@@ -24,6 +24,10 @@ make                               # cc -O2 -Wall -Wextra -o servo servo.c
 echo "ping" | ./servo              # non-tty stdin works for scripted commands (no prompt printed)
 ```
 
+## Git
+
+Commit and push to `origin main` whenever a change is done and tested; no need to ask first. Keep README, `help()` and this file in step with the code in the same commit.
+
 Keep the build warning-free under `-Wall -Wextra`. You can only really verify a change with hardware attached. If you can't test on a servo, say so.
 
 ## Architecture
