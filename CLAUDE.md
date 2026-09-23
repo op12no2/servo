@@ -9,7 +9,8 @@ A single-file C tool (`servo.c`): an interactive REPL for poking Feetech SCS/STS
 ## Hardware
 
 - **Host:** Raspberry Pi 5, where Claude Code itself runs, so commands can be tried against the real servo.
-- **Board:** Waveshare Serial Bus Servo Driver Board (https://thepihut.com/products/serial-bus-servo-driver-board). It connects over USB through a CH343 USB-serial chip (`1a86:55d3`) and appears as `/dev/ttyACM0` (`/dev/serial/by-id/usb-1a86_USB_Single_Serial_*`).- **Servo:** Waveshare SC09 (see above).
+- **Board:** Waveshare Serial Bus Servo Driver Board (https://thepihut.com/products/serial-bus-servo-driver-board). It connects over USB through a CH343 USB-serial chip (`1a86:55d3`) and appears as `/dev/ttyACM0` (`/dev/serial/by-id/usb-1a86_USB_Single_Serial_*`).
+- **Servo:** Waveshare SC09 (see above).
 
 ## Build / run
 
