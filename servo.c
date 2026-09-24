@@ -178,12 +178,45 @@ static const char *errstr(unsigned char e)
     static char buf[128];
     if (!e) return "ok";
     buf[0] = 0;
-    if (e & 0x01) strcat(buf, "voltage ");
-    if (e & 0x02) strcat(buf, "angle ");
-    if (e & 0x04) strcat(buf, "overheat ");
-    if (e & 0x08) strcat(buf, "overcurrent ");
-    if (e & 0x20) strcat(buf, "overload ");
+    if (e & 0x01) strcat(buf, " voltage");
+    if (e & 0x02) strcat(buf, " angle");
+    if (e & 0x04) strcat(buf, " overheat");
+    if (e & 0x08) strcat(buf, " overcurrent");
+    if (e & 0x20) strcat(buf, " overload");
+    return buf + 1;
+}
+
+/*
+ * Error bits from status replies, per id, gathered by read_regs/write_regs
+ * rather than printed there, so each id's status is reported once per command:
+ * on its own output line via status_tail(), else by flush_status() afterwards.
+ */
+static unsigned char status_err[254];
+
+static void note_status(int id, unsigned char e)
+{
+    if (id >= 0 && id < 254) status_err[id] |= e;
+}
+
+/* " (status ...)" for id's pending errors, clearing them; "" if none */
+static const char *status_tail(int id)
+{
+    static char buf[160];
+    buf[0] = 0;
+    if (id >= 0 && id < 254 && status_err[id]) {
+        snprintf(buf, sizeof buf, " (status %s)", errstr(status_err[id]));
+        status_err[id] = 0;
+    }
     return buf;
+}
+
+static void flush_status(void)
+{
+    for (int id = 0; id < 254; id++)
+        if (status_err[id]) {
+            printf("id %d: status %s\n", id, errstr(status_err[id]));
+            status_err[id] = 0;
+        }
 }
 
 static int ping(int id)
@@ -214,7 +247,7 @@ static int read_regs(int id, int addr, int n, unsigned char *out)
     unsigned char p[2] = { addr, n }, e = 0;
     int r = txrx(id, INST_READ, p, 2, &e, out, n);
     if (r < 0) { printf("id %d: no reply\n", id); return -1; }
-    if (e) printf("  status: %s\n", errstr(e));
+    note_status(id, e);
     return r;
 }
 
@@ -224,7 +257,7 @@ static int write_regs(int id, int addr, const unsigned char *v, int n)
     p[0] = addr; memcpy(p + 1, v, n);
     int r = txrx(id, INST_WRITE, p, n + 1, &e, out, sizeof out);
     if (r < 0) { printf("id %d: no reply\n", id); return -1; }
-    if (e) printf("  status: %s\n", errstr(e));
+    note_status(id, e);
     return 0;
 }
 
@@ -399,7 +432,7 @@ static int run(char **tok, int nt)
     }
     else if (!strcmp(c, "pos")) {
         int id = arg(tok, 1, nt, 1, NULL), v;
-        if (read_u16(id, REG_PRESENT_POS, &v) == 0) printf("id %d pos %d\n", id, v);
+        if (read_u16(id, REG_PRESENT_POS, &v) == 0) printf("id %d pos %d%s\n", id, v, status_tail(id));
     }
     else if (!strcmp(c, "stat")) {
         int id = arg(tok, 1, nt, 1, NULL);
@@ -410,9 +443,9 @@ static int run(char **tok, int nt)
                    id, get16(P(REG_PRESENT_POS)), get16(P(REG_PRESENT_SPEED)), get16(P(REG_PRESENT_LOAD)),
                    *P(REG_VOLTAGE) / 10.0, *P(REG_TEMP), *P(REG_MOVING));
 #undef P
-            if (read_regs(id, REG_MIN_ANGLE, 4, l) != 4) putchar('\n');
-            else if (!get16(l) && !get16(l + 2)) puts(" motor");
-            else printf(" servo %d..%d\n", get16(l), get16(l + 2));
+            if (read_regs(id, REG_MIN_ANGLE, 4, l) != 4) printf("%s\n", status_tail(id));
+            else if (!get16(l) && !get16(l + 2)) printf(" motor%s\n", status_tail(id));
+            else printf(" servo %d..%d%s\n", get16(l), get16(l + 2), status_tail(id));
         }
     }
     else if (!strcmp(c, "move")) {             /* takes its own id list: one sync write */
@@ -431,12 +464,12 @@ static int run(char **tok, int nt)
     else if (!strcmp(c, "rb")) {
         int id = arg(tok, 1, nt, 1, &ok), a = arg(tok, 2, nt, 0, &ok); unsigned char b;
         if (!ok) { puts("usage: rb <id> <addr>"); return 0; }
-        if (read_regs(id, a, 1, &b) == 1) printf("id %d [0x%02X] = %d (0x%02X)\n", id, a, b, b);
+        if (read_regs(id, a, 1, &b) == 1) printf("id %d [0x%02X] = %d (0x%02X)%s\n", id, a, b, b, status_tail(id));
     }
     else if (!strcmp(c, "rw")) {
         int id = arg(tok, 1, nt, 1, &ok), a = arg(tok, 2, nt, 0, &ok), v;
         if (!ok) { puts("usage: rw <id> <addr>"); return 0; }
-        if (read_u16(id, a, &v) == 0) printf("id %d [0x%02X] = %d (0x%04X)\n", id, a, v, v);
+        if (read_u16(id, a, &v) == 0) printf("id %d [0x%02X] = %d (0x%04X)%s\n", id, a, v, v, status_tail(id));
     }
     else if (!strcmp(c, "wb")) {
         int id = arg(tok, 1, nt, 1, &ok), a = arg(tok, 2, nt, 0, &ok), v = arg(tok, 3, nt, 0, &ok);
@@ -455,7 +488,7 @@ static int run(char **tok, int nt)
             int k = a + 8 > 0x46 ? 0x46 - a : 8;
             if (read_regs(id, a, k, b + a) != k) return 0;
         }
-        printf("id %d:\n", id);
+        printf("id %d:%s\n", id, status_tail(id));
         for (int a = 0; a < 0x46; a++) {
             if (a % 8 == 0) printf("%02X:", a);
             printf(" %02X", b[a]);
@@ -480,7 +513,7 @@ static int run(char **tok, int nt)
             write_u8(id, REG_LOCK, 1);
         }
         if (read_u16(id, REG_MIN_ANGLE, &mn) == 0 && read_u16(id, REG_MAX_ANGLE, &mx) == 0)
-            printf("id %d limits %d..%d\n", id, mn, mx);
+            printf("id %d limits %d..%d%s\n", id, mn, mx, status_tail(id));
     }
     else if (!strcmp(c, "motor")) {            /* SC "PWM/wheel" mode: both angle limits = 0 */
         int id = arg(tok, 1, nt, 1, NULL);
@@ -508,7 +541,7 @@ static int run(char **tok, int nt)
         write_u8(id, REG_LOCK, 1);
         int mn, mx;
         if (read_u16(id, REG_MIN_ANGLE, &mn) == 0 && read_u16(id, REG_MAX_ANGLE, &mx) == 0)
-            printf("id %d: servo mode, limits %d..%d\n", id, mn, mx);
+            printf("id %d: servo mode, limits %d..%d%s\n", id, mn, mx, status_tail(id));
     }
     else if (!strcmp(c, "raw")) {
         unsigned char b[64]; int n = 0;
@@ -534,7 +567,11 @@ static int dispatch(char **tok, int nt)
 {
     int per_id = 0;
     for (int i = 0; per_id_cmds[i]; i++) if (!strcmp(tok[0], per_id_cmds[i])) per_id = 1;
-    if (!per_id || (nt < 2 && !strcmp(tok[0], "ping"))) return run(tok, nt);
+    if (!per_id || (nt < 2 && !strcmp(tok[0], "ping"))) {
+        int q = run(tok, nt);
+        flush_status();
+        return q;
+    }
     if (nt < 2) { printf("%s: missing <id> (help)\n", tok[0]); return 0; }
 
     int ids[254], nid = parse_ids(tok[1], ids);
@@ -545,6 +582,7 @@ static int dispatch(char **tok, int nt)
     for (int i = 0; i < nid; i++) {
         snprintf(idbuf, sizeof idbuf, "%d", ids[i]);
         run(t, nt);
+        flush_status();
     }
     return 0;
 }
